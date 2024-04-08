@@ -1,0 +1,1075 @@
+
+---
+title: "MGT7179ReportTemV02"
+author1:
+  - Name: Jyoti, Family Name; Bishnoi
+author2:
+- Student ID- 40385928
+editor_options:
+  markdown:
+    wrap: 60
+    references:
+      location: block
+output: 
+  bookdown::pdf_document2:
+    template: /Users/jyotismac/Library/CloudStorage/OneDrive-Queen'sUniversityBelfast/Semester 2/01 Advanced Analytics/Lab sessions/MGT7179LatexTempV02.tex
+    keep_tex: true
+    pandoc_args: "--listings"
+  xaringan::ninjutsu:
+    css: [default, chocolate, metropolis-fonts]
+knitr:
+  root.dir: /Users/jyotismac/Documents/BUSINESS ANALYTICS/DATA SETS
+date: "2023-05-01"
+---
+
+```{r setup, include=FALSE,cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tinytex.verbose = TRUE)
+
+```
+
+
+```{r load library, echo=FALSE, include=FALSE}
+library(readxl)
+library(openxlsx)
+library(dlookr)
+library(dplyr)
+library(pROC)
+library(ggplot2)
+library(kableExtra)
+library(stringr)
+library(glmnet)
+library(gbm)
+library(e1071)
+library(ISLR)
+library(keras)
+library(randomForest)
+
+```
+
+
+# Introduction
+
+The given data set ([Appendix:1](#1)), contains panel data from Airbnb listing in three major cities viz. Antwerp, Copehagen and Amsterdam.The data has total 6468 observations across 49 variables. The objective of this report is to build a predictive model using supervised machine learning methods to predict best price to rent out a space through Airbnb.
+
+```{r Data Load, echo=FALSE}
+
+# Load Data
+df <- read.csv("/Users/jyotismac/Documents/dataset-cities- Amsterdam- - Antwerp_22 - Copenhagen - student 23 .csv")
+
+```
+
+
+# METHODOLOGY
+
+The statistical summary was observed to identify missing/null values, outliers etc. After preprocessing the data, 1865 observations were left. This section is divided into parts - Statistical summary, Data Preprocessing, Data exploration, Data Modelling
+
+## Statistical Summary
+The statistical summary [(Appendix:2)](#2) showed following observations:  
+  * Missing values in almost all variables.  
+  * more than 65% data missing in these variables - negihbourhood group cleansed, bathrooms, license, calender udpated,host_neighrbourhood.  
+  * Approx 4000 missing values in remaining variables.  
+  
+```{r Stats Summary, echo=FALSE, include=FALSE}
+
+# check dimension of the dataframe
+dim(df)
+
+# check column names and first 6 observations
+head(df) 
+
+# summary of all variables
+summary(df) 
+
+# summary of only categorical variable
+diagnose_category(df) 
+
+# checking for missing values
+df%>%
+  diagnose()%>%  #finds count of missing values in dataset
+  filter(missing_count>0)%>% #filtering variables having NA values more than 0
+  arrange(desc(missing_count))%>%
+  kable(col.names = c("Variables", "type","Missing_count", "missing%",
+                      "unique_count", "unique%"), align = "c",
+        caption = "Missing counts in decreasing order")
+
+```
+
+## DATA PREPROCESSING
+
+The most important task before analysing the data is to clean it by addressing data quality issues like missing values, outliers, zeroes/null values. The data was loaded in R and statistical summary was observed based on which decisions were taken to clean the data using different methods. The codes used for addressing DQ issues through R code are appended in [(Appendix:3a)](#3a) to [(Appendix:3h)](#3h). The summary of tasks undertaken to clean the data as presented in following table. 
+
+```{r,out.width = "90%", fig.align = "center", echo=FALSE}
+knitr::include_graphics("images/Image01.png")
+```
+
+The data cleaning was carried out before data splitting to avoid repetition of task. Apart from above tasks to clean the data, some more actions were taken after splitting the data into Dataset A and B based on remaining NAs in few date columns as dropping them would have led to data loss. 
+```{r Prepro 1,echo = FALSE, include=FALSE}
+
+# converting categorical to factor
+df1 <- df%>%
+  mutate_if(is.character, as.factor)
+
+# converting logical to factor
+df1 <- df1%>%
+  mutate_if(is.logical, as.factor)
+
+# replace value in "city" column and convert back to factor
+df1$city <- factor(ifelse(as.character(df1$city) == "Antwerp_22_Sep2022_listings (1).csv", "Antwerp",ifelse(as.character(df1$city) == "Amsterdam-7Sep2022-listings (1).csv", "Amsterdam",ifelse(as.character(df1$city) =="Copenhagen_24_Sep_2022_listings (1).csv", "Copenhagen",as.character(df1$city)))))
+
+# dropping columns having more than 65% NAs.
+
+df1 <- subset(df1, select = -c(calendar_updated,license, neighbourhood_group_cleansed, bathrooms, neighbourhood, host_neighbourhood, 
+                               host_id, X, host_location))
+
+```
+
+
+```{r Prepro 2,echo=FALSE, include=FALSE}
+# dropping NAs in column ID
+df1 <- df1[complete.cases(df1$id),]
+
+# dropping NAs in column review_Scores_accuracy
+df1 <- df1[complete.cases(df1$review_scores_accuracy),]
+
+# dropping NAs in column review_Scores_accuracy
+df1 <- df1[complete.cases(df1$bathrooms_text),]
+
+# Changing NAs to 1 in bedrooms and beds columns
+df1$bedrooms[is.na(df1$bedrooms)] <- 1
+df1$beds[is.na(df1$beds)] <- 1
+
+#check for duplicates in ID column for maintaining uniqueness
+sum(duplicated(df$ID))
+
+```
+
+```{r Prepro 3,echo=FALSE, include=FALSE}
+
+### counting number of amenities in amenities column
+# Create a new column to store the number of amenities
+df1$num_amenities <- 0
+
+# Loop through each row in the dataframe
+for (i in 1:nrow(df1)) {
+  
+  # Get the amenities string for the current row
+  amenities_str <- df1$amenities[i]
+  
+  # Use gregexpr to find all the phrases in double quotes
+  phrases <- gregexpr('\\".*?\\"', amenities_str)[[1]]
+  
+  # Get the length of the phrases vector and add it to the num_amenities column for the current row
+  df1$num_amenities[i] <- length(phrases)
+  
+}
+```
+
+
+```{r Prepro 4,echo=FALSE, include=FALSE}
+# Remove "$" sign and convert price column to numeric data type
+df1 <- df1 %>% 
+  mutate(price = as.numeric(str_replace_all(price, "[$,]", "")))
+
+# replace N/A in host_response_time with "a few days or more"
+df1$host_response_time <- as.factor(sub("N/A", "a few days or more", 
+                                        df1$host_response_time))
+
+# Convert host_response_rate to numeric
+df1$host_response_rate <- sub("N/A", "0%", df1$host_response_rate)
+df1$host_response_rate_num <- as.numeric(sub("%", "", df1$host_response_rate))
+
+# Create bins using cut() in host_response_rate column
+df1$host_response_rate_bin <- cut(df1$host_response_rate_num, 
+                                  breaks = c(-1 , 5, 8, 100), labels = c("low", "medium", "high"))
+
+# Convert host_acceptance_rate to numeric
+df1$host_acceptance_rate <- sub("N/A", "0%", df1$host_acceptance_rate)
+df1$host_acceptance_rate_num <- as.numeric(sub("%", "", df1$host_acceptance_rate))
+
+# Create bins using cut() in host_acceptance_rate column
+df1$host_acceptance_rate_bin <- cut(df1$host_acceptance_rate_num, 
+                                    breaks = c(-1, 5, 8, 100), labels = c("low", "medium", "high"))
+
+```
+
+
+```{r Prepro 5,echo=FALSE, include=FALSE}
+
+# Recategorising property type column
+# create a vector with new level names
+new_levels <- c("Cottage", "Guesthouse", "Loft", "Rental unit", "Townhouse", "Villa", "Condo", "Guest suite", "Home", "Apartment", "Vacation home", "Boat", "Hotel", "Bed and breakfast","Others")
+
+# use ifelse() and grepl() to recategorize the levels
+df1$property_type_new <- as.factor(ifelse(grepl("Entire cottage|Private room in casa particular", df1$property_type), "Cottage",
+                                          ifelse(grepl("Entire guesthouse|Private room in guesthouse", df1$property_type), "Guesthouse",
+                                                 ifelse(grepl("Entire loft|Private room in loft", df1$property_type), "Loft",
+                                                        ifelse(grepl("Entire rental unit|Private room in rental unit|Shared room in rental unit", df1$property_type), "Rental unit",
+                                                               ifelse(grepl("Entire townhouse|Private room in townhouse", df1$property_type), "Townhouse",
+                                                                      ifelse(grepl("Entire villa", df1$property_type), "Villa",
+                                                                             ifelse(grepl("Entire condo|Private room in condo", df1$property_type), "Condo",
+                                                                                    ifelse(grepl("Entire guest suite|Private room in guest suite", df1$property_type), "Guest suite",
+                                                                                           ifelse(grepl("Entire home|Private room in home|Shared room in home", df1$property_type), "Home",
+                                                                                                  ifelse(grepl("Entire serviced apartment|Private room in serviced apartment", df1$property_type), "Apartment",
+                                                                                                         ifelse(grepl("Entire vacation home|Entire place", df1$property_type), "Vacation home",
+                                                                                                                ifelse(grepl("Boat|Private room in boat|Shipping container", df1$property_type), "Boat",
+                                                                                                                       ifelse(grepl("Houseboat|Private room in houseboat", df1$property_type), "Boat",
+                                                                                                                              ifelse(grepl("Room in hotel|Room in apart hotel|Room in boutique hotel", df1$property_type), "Hotel",
+                                                                                                                                     ifelse(grepl("Room in bed and breakfast|Private room in bed and breakfast", df1$property_type), "Bed and breakfast",
+                                                                                                                                            "Others"))))))))))))))))
+
+
+```
+
+
+```{r Prepro 6,echo=FALSE, include=FALSE}
+
+# dropping duplicate columns
+df1 <- subset(df1, select = -c(amenities,host_acceptance_rate,host_acceptance_rate_num,
+                                 host_response_rate,host_response_rate_num,
+                                 id,property_type))
+
+```
+
+```{r Prepro 7,echo=FALSE, include=FALSE,out.width = "50%",fig.width=10, fig.height=10}
+
+par(mfrow=c(2,2))
+#for bar plot of character variables.
+plot_bar_category(df1, each=TRUE)
+
+# plot outliers of numeric variables
+plot_outlier(df1, col = "magenta")
+
+
+```
+
+```{r Prepro 8,echo=FALSE, include=FALSE}
+# Dealing with outliers in price 
+
+df1_clean <- subset(df1, price < 1000)
+
+# density plot of price
+
+```
+
+### Correlation between numeric predictors [(Appendix:4)](#4)
+
+Correlation also known as multi collinearity is the degree to which each variable is correlated with other predictor variables. A high correlation between predictor variables causes problem in determining the effect of each independent variable on the response variable. Correlation between numeric predictors was identified using corrplot package.
+
+```{r Correlation, echo=FALSE, include=FALSE}
+# CORRELATION MATRIX
+library(corrplot)
+
+# segregating numeric variables
+df_num <- select_if(df1_clean,is.numeric) 
+
+# Calculate the correlation matrix
+cor_matrix <- cor(df_num)
+```
+
+```{r,echo=FALSE, include=TRUE}
+# visualising a correlation matrix
+corrplot(cor_matrix,diag=FALSE, tl.col = "black", tl.pos = "lt",tl.srt = 45,mar = c(0,0,0,0), tl.cex = 0.60, tl.offset = 0.5)
+
+```
+
+Correlation matrix above shows dark blue dots for strong positive correlation while dark orange dots show strong negative correlation between predictors variables. The coefficient values fall between -1 and +1, where -1 denotes an ideal linearly negative relationship, 0 an ideal linearly neutral relationship, and +1 an ideal linearly positive relationship. The following table shows the variables having strong correlation (> |0.8|) with other variables. The variables which are showing strong correlation with other variables were dropped before data splitting to avoid multi collinearity.([Appendix:5](#5))
+
+```{r,echo= FALSE, out.width = "90%", fig.align = "center"}
+knitr::include_graphics("images/Image02.png")
+```
+
+The variables which are showing strong correlation with other variables were dropped before data splitting to avoid multi collinearity.
+
+```{r cor subset,echo=FALSE, include=FALSE }
+# creating duplicate dataset with un-correlated variables only
+df1_select <- df1_clean
+df1_select <- subset(df1_select, 
+                     select = -c(host_total_listings_count, latitude,
+                                 beds,availability_60, availability_90,
+                                 review_scores_accuracy, review_scores_cleanliness,
+                                 review_scores_communication))
+
+```
+
+### Data Exploration ([Appendix:6](#6))
+Data was graphically explored to see any relation between predictors and target variable. The price distribution shows slightly normal distribution except a few observations which are still outliers but dropping them would lead to loss of data. The scatter plots of review_scores on various parameters against price shows almost similar plots where in most data is clustered towards higher rating 5. 
+
+```{r G1, echo=FALSE, include=TRUE, warning=FALSE,out.width = "50%",fig.width=10, fig.height=10}
+
+par(mfrow=c(2,2))
+#plot between sales price and no of houses with abline of mean sale price
+hist((df1_clean$price), col="pink",
+     main="Frequency Distribution of price",
+     xlab="Price($)")
+abline(v=median(df1_clean$price), col="red", lwd=4)
+
+ggplot(df1_clean,aes(x=price))+
+  geom_density()+
+  geom_histogram(aes(y=..density..),fill="red",alpha=0.23)+
+  labs(title="density plot of price", x="price($)")
+
+#plot between Price and review_scores_rating
+
+ggplot(df1)+
+  geom_point(mapping=aes(review_scores_rating, price))+
+  geom_smooth(mapping=aes(review_scores_rating, price))
+
+#plot between Price and review_scores_accuracy
+
+ggplot(df1)+
+  geom_point(mapping=aes(review_scores_accuracy, price))+
+  geom_smooth(mapping=aes(review_scores_accuracy, price))
+
+```
+
+```{r G2, echo=FALSE, include=FALSE}
+
+par(mfrow=c(2,2))
+#plot between Price and Bedrooms
+
+ggplot(df1)+
+  geom_point(mapping=aes(bedrooms, price))+
+  geom_smooth(mapping=aes(bedrooms, price))
+
+#plot between Price and Beds
+
+ggplot(df1)+
+  geom_point(mapping=aes(beds, price))+
+  geom_smooth(mapping=aes(beds, price))
+
+#plot between Price and review_scores_cleanliness
+
+ggplot(df1)+
+  geom_point(mapping=aes(review_scores_cleanliness, price))+
+  geom_smooth(mapping=aes(review_scores_cleanliness, price))
+
+#plot between Price and review_scores_checkin
+
+ggplot(df1)+
+  geom_point(mapping=aes(review_scores_checkin, price))+
+  geom_smooth(mapping=aes(review_scores_checkin, price))
+
+#plot between Price and review_scores_communication
+
+ggplot(df1)+
+  geom_point(mapping=aes(review_scores_communication, price))+
+  geom_smooth(mapping=aes(review_scores_communication, price))
+
+#plot between Price and review_scores_location
+
+ggplot(df1)+
+  geom_point(mapping=aes(review_scores_location, price))+
+  geom_smooth(mapping=aes(review_scores_location, price))
+
+#plot between Price and review_scores_value
+
+ggplot(df1)+
+  geom_point(mapping=aes(review_scores_value, price))+
+  geom_smooth(mapping=aes(review_scores_value, price))
+
+#plot between Price and reviews_per_month
+
+ggplot(df1)+
+  geom_point(mapping=aes(reviews_per_month, price))+
+  geom_smooth(mapping=aes(reviews_per_month, price))
+
+#plot between Price and num_amenities
+
+ggplot(df1)+
+  geom_point(mapping=aes(num_amenities, price))+
+  geom_smooth(mapping=aes(num_amenities, price))
+
+ggplot(df1,aes(x=num_amenities))+
+  geom_density()+
+  geom_histogram(aes(y=..density..),fill="red",alpha=0.23)+
+  labs(title="density plot of number of amenities", x="number of amenities")
+
+```
+
+```{r G3, echo=FALSE, include=FALSE,warning=FALSE,out.width = "50%",fig.width=10, fig.height=10}
+par(mfrow=c(2,2))
+# Calculate the average price per property
+avg_price <- aggregate(price ~ property_type_new, data = df1_clean, FUN = mean)
+
+# Create a bar plot of the average price per property
+ggplot(avg_price, aes(x = property_type_new, y = price)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(x = "Property Type", y = "Average Price") +
+  ggtitle("Average Price per Property") +
+  theme_minimal()
+
+# Create a bar plot of the property types
+ggplot(df1_clean, aes(x = property_type_new)) +
+  geom_bar(fill = "blue") +
+  labs(x = "Property Type", y = "Frequency") +
+  ggtitle("Property Type Distribution") +
+  theme_minimal()
+
+# Create a bar plot of the room types
+ggplot(df1_clean, aes(x = room_type)) +
+  geom_bar(fill = "blue") +
+  labs(x = "Room Type", y = "Frequency") +
+  ggtitle("Room Type Distribution") +
+  theme_minimal()
+
+# Create a bar plot or histogram of price by room type
+ggplot(df1_clean, aes(x = price, fill = room_type)) +
+  geom_histogram(binwidth = 50, position = "dodge", alpha = 0.7) +
+  labs(x = "Price", y = "Count") +
+  ggtitle("Price Distribution by Room Type") +
+  theme_minimal()
+
+
+# Create a bar plot of bedroom vs. price
+ggplot(df1_clean, aes(x = as.factor(bedrooms), y = price)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(x = "Bedroom", y = "Price") +
+  ggtitle("Bedroom vs. Price Bar Plot") +
+  theme_minimal()
+
+
+# Create a bar plot of accommodates vs. price
+ggplot(df1_clean, aes(x = as.factor(accommodates), y = price)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(x = "Accomodates", y = "Price") +
+  ggtitle("Accommodates vs. Price Bar Plot") +
+  theme_minimal()
+
+```
+
+### Data Splitting ([Appendix:7](#7)) 
+
+The frequency of distribution of observations based on city is as following. It can be seen that maximum observations pertain to city Antwerp followed by Amsterdam and Copenhagen.
+
+```{r city freq,echo=FALSE, include=TRUE,out.width = "70%",fig.width=10, fig.height=10 }
+
+# Frequency of city variable
+df1_select %>%
+  count(city) %>%
+  arrange(desc(n)) %>%
+  kable(col.names = c("City", "Count"), align = "c",
+        caption = "City counts in decreasing order")
+
+```
+
+```{r city freq graph,echo=FALSE, include=TRUE,out.width = "50%",fig.width=10, fig.height=10, fig.align='center'}
+city_freq <- table(df1_select$city)
+city_freq_df <- as.data.frame(city_freq)
+
+# Create the bar plot
+barplot(city_freq, main = "Frequency of Cities", xlab = "City", ylab = "Frequency", col = c("magenta","blue","red"))
+
+```
+
+The observations pertaining to top frequent city was taken into Data Set and those of next two cities were taken into Data Set B.
+
+```{r Data split,echo=FALSE, include=FALSE }
+
+## Data set splitting in Dataset A
+
+df_A <- subset(df1_select, city == "Antwerp")
+df_A$city <-  droplevels(df_A$city)
+
+## Data set splitting in Dataset B
+df_B <- df1_select[df1_select$city %in% c("Amsterdam", "Copenhagen"),]
+df_B$city <-  droplevels(df_B$city)
+
+```
+
+After splitting the data, some new columns like first_review_years and last_review_years were created to count the number of years since first and last review received on a property listing. Likewise number of years since the host is registered with Airbnb was also calculated and binned into groups.([Appendix:8](#8))
+
+```{r Bins,echo=FALSE, include=FALSE }
+### counting number of days from first_review column
+df_A$first_review <- as.Date(df_A$first_review)
+df_A$first_review_years <- as.numeric(round(((Sys.Date()-df_A$first_review)/365),0))
+
+# ### counting number of days from last_review column
+df_A$last_review <- as.Date(df_A$last_review)
+df_A$last_review_years <- as.numeric(round(((Sys.Date()-df_A$last_review)/365),0))
+
+### counting number of days from host_since column
+df_A$host_since <- as.Date(df_A$host_since)
+
+# calculate the time difference from system date
+df_A$time_diff <- as.numeric(Sys.Date() - df_A$host_since)
+# 
+# # create time interval bins for host_since
+breaks <- c(0, 365, 730, 1825, max(df_A$time_diff))
+labels <- c("<= 1 year",
+            "> 1 year and <= 2 years", "> 2 years and <= 5 years", "> 5 years")
+df_A$host_since_bin <- cut(df_A$time_diff, breaks = breaks, labels = labels)
+
+
+# dropping duplicate columns
+df_A <- subset(df_A, select = -c(host_since,first_review, last_review,time_diff,city))
+
+```
+
+### Feature Selection using LASSO model ([Appendix:9](#9))
+
+Since the number of variables is high, if all the variables are chosen for model building it may lead to over fitting and complexity of the model. Thus to prevent the same, it is pertinent to choose only the most important variables which explain variability in the data set. A Lasso regression model was used to select the top 15 predictor variables. For this purpose dummy variables were created for all categorical predictors. The Lasso method selects variables by shrinking some of the coefficients to zero by adding a penalty and thus removing those that do not contribute to the model. Choosing a lambda value that strikes a compromise between model complexity and prediction performance is the fundamental goal of employing regularisation.
+  
+```{r Lasso 1,echo=FALSE, include= TRUE,out.width = "60%",fig.width=10, fig.height=10, fig.align='center' }
+
+# duplicate the data
+df_A01 <- df_A
+
+### splitting the data
+
+# creating dummy variables of predictor variables
+set.seed(40385928)
+x = model.matrix(price~.,df_A01)[,-1] #dropping the interpcept
+
+# separating response variable
+y = df_A01$price
+
+# splitting train and test data
+set.seed(40385928)
+train.l = sample(1:nrow(x), nrow(x)/2)
+test.l = (-train.l)
+y.test.l = y[test.l]
+
+# creating a lambda sequence
+grid = 10^seq(10, -2, length = 100)
+
+# Fit Lasso model with cross-validation to find best lambda
+set.seed(40385928)
+cv_modelA01 <- cv.glmnet(x[train.l,], y[train.l], alpha=1, nfolds =10)
+
+# Plot the cross-validation error as a function of lambda
+plot(cv_modelA01)
+
+# Select the best lambda value
+best_lambdaA01 <- cv_modelA01$lambda.min
+```
+
+The graph between Mean squared error and log lambda shows that as the value of log lambda increases (i.e value of lambda decreases), the model complexity increases which might overfit the data while a higher lambda would lead to a more simple model.The lambda value with the lowest cross-validation error is the ideal one. The best lambda value was found to be 0.93, resulting in 48 relevant predictor variables (with multiple levels of same categorical variables).
+```{r Lasso 2,echo=FALSE, include=FALSE }
+
+# fitting lasso model on train set
+set.seed(40385928)
+lasso.mod=glmnet(x[train.l,], y[train.l], alpha=1, lambda=grid)
+plot(lasso.mod, label=TRUE)
+plot(lasso.mod, xvar="lambda", label=TRUE, lwd=6)
+
+# prediction using lasso
+set.seed(40385928)
+lasso.pred <- predict(lasso.mod, s = best_lambdaA01, newx = x[test.l,])
+
+#pred_class <- ifelse(lasso.pred >= 0.5, 1, 0)
+mse <- mean((lasso.pred - y[test.l])^2)
+R2.las <- cor(lasso.pred,y[test.l])^2
+
+# running lasso on whole data set
+set.seed(40385928)
+out = glmnet(x, y, alpha=1, lambda = grid)
+
+# extracting coeficients of lasso model
+set.seed(40385928)
+lasso.coef=predict(out, type="coefficients", s=best_lambdaA01)[1:74,]
+lc <- lasso.coef[lasso.coef!=0]
+
+# tabulate coefficients
+lc_df <- data.frame(variable = names(lc)[-1], coefficient = lc[-1])
+
+# arranging coefficients in descending order
+coeff_las <- lc_df[order(abs(lc_df$coefficient), decreasing = TRUE), ]
+
+```
+
+The following table shows top 15 predictor variables chosen for analysis.A subset of data was created to keep variables of importance only.
+
+
+```{r,echo= FALSE, out.width = "50%", fig.align = "center"}
+knitr::include_graphics("images/Image03.png")
+```
+
+
+```{r Top15,echo= FALSE, include = FALSE }
+# Choosing top 15 features
+
+form <- price ~ bathrooms_text + longitude + property_type_new + 
+  room_type + bedrooms + host_acceptance_rate_bin + review_scores_rating +
+  last_review_years + host_since_bin + host_is_superhost + 
+  host_acceptance_rate_bin + reviews_per_month + accommodates + 
+  availability_30 +has_availability
+
+# creating subset of selected features
+df_model_A <- df_A01
+  
+df_model_A <- df_model_A[,c("bathrooms_text","longitude" , "property_type_new" , 
+  "room_type", "bedrooms", "host_acceptance_rate_bin" ,
+  "review_scores_rating", "last_review_years", "host_since_bin",
+ "host_acceptance_rate_bin", "host_is_superhost", "reviews_per_month",
+  "accommodates", "availability_30","price", "has_availability")]
+
+```
+
+\newpage
+# RESULTS AND DISCUSSION
+
+## Models- Dataset A
+
+### Method 1: Random Forest ([Appendix:10](#10))
+
+Random Forest Method is a specific type of Bagging which uses decision trees as base model and adds randomisation by creating independent decision trees on random subset of data and random features to reduce overfitting and improve model performance. The random selection of data is controlled by **mtry** arguement in randomForest() function which takes default value equivalent to square root of number of variables. Final prediction is made by taking average of all independent trees. 
+Mean Squared Error, Root Mean Squared Error and R square are used to evaluate performance of the model.
+
+```{r RF1, echo= FALSE, include= FALSE}
+
+set.seed(40385928)
+
+# create train dataset by splitting main data into half
+train <- sample(1:nrow(df_model_A), nrow(df_model_A) / 2)
+
+# create test dataset on price
+df_A.test <- df_model_A[-train, "price"]
+```
+
+```{r RF2, echo= TRUE, include= TRUE}
+#==============================================
+# DATASET A - RANDOM FOREST
+#==============================================
+set.seed(40385928)
+
+# fit the random forest model on train dataset
+rf.df_A <- randomForest(form, data = df_model_A,
+    subset = train, mtry = sqrt(ncol(df_model_A)-1), importance = TRUE)
+
+# predict response using fitted random forest model
+yhat.rf <- predict(rf.df_A, newdata = df_model_A[-train, ])
+
+# calcualte MSE and RMSE of predictions on test dataset
+mse_rf <- mean((df_A.test-yhat.rf)^2)
+rmse_rf <- sqrt(mse_rf)
+
+# Calculate the mean of the response variable
+mean_y <- mean(df_A.test)
+
+# Calculate the total sum of squares (TSS)
+tss <- sum((df_A.test - mean_y)^2)
+
+# Calculate the residual sum of squares (RSS)
+rss.rf <- sum((df_A.test - yhat.rf)^2)
+
+# Calculate the R-squared value
+r2_rf <- 1 - rss.rf/tss
+
+# calculate importance feature values for random forest model
+importance(rf.df_A)
+```
+
+The outcome of random forest gives importance value which help in identifying which variables are most important for predicting the target outcome. It shows here that availability_30 and property_type_new are two most important variables.
+
+```{r RF3,echo=TRUE, include=TRUE}
+# create plot of importance feature values for random forest model
+varImpPlot(rf.df_A)
+```
+
+The above plot (left) shows that higher the %incMSE value for a variable, more important it is for prediction of target. Likewise, plot on right, shows importance of a variable in improving purity of the nodes in the tree i.e. higher the %IncNodePurity, more important the variable is.
+
+
+```{r RF4, echo=FALSE, include=TRUE}
+# Results print
+cat("Test set MSE for Random Forest Model:", mse_rf, "\n")
+cat("Test set RMSE for Random Forest Model:", rmse_rf, "\n")
+cat("Test set R-squared for Random Forest Model:", r2_rf, "\n")
+```
+The outcome of random forest is as above. The model performed poorly with accuracy of 47% only.R squared of 0.47 informs that only 47% of variance in data is explained by the combination of features used. RMSE is moderat which shows the predicted values deviate from the actual value by about 51.86 units. 
+
+
+#### Method 1a: Gradient Boosting
+Boosting builds decision trees sequentially with each subsequent tree to correct errors of previous trees by placing weights on misclassified observations which helps in improving performance. The distribution parameter has taken arguemnt "gaussian" for regression problems. The shrinkage parameter controls the step size of gradient boosting algorithm. A smaller value leads to better generalisation and less overfitting. Interaction depth specified maximum depth of each tree where in higher value allows more complex relationshio between features and target while increasing the risk of overfitting. 
+
+```{r Boost1, echo=TRUE, include=TRUE}
+#==============================================
+# DATASET A - GRADIENT BOOSTING
+#==============================================
+
+set.seed(1)
+boost.df_A1 <- gbm(form, data = df_model_A[train, ],
+    distribution = "gaussian", n.trees = 5000,
+    interaction.depth = 4, shrinkage = 0.01, verbose = F)
+yhat.boost.1 <- predict(boost.df_A1,
+    newdata = df_model_A[-train, ], n.trees = 5000)
+# calculate MSE and RMSE of predictions on test data
+mse_boost <- mean((df_A.test-yhat.boost.1)^2)
+rmse_boost <- sqrt(mse_boost)
+# Calculate the residual sum of squares (RSS)
+rss.boost <- sum((df_A.test - yhat.boost.1)^2)
+# Calculate the R-squared value
+r2_boost <- 1 - rss.boost/tss
+```
+
+
+```{r Boost2, echo=FALSE, include=TRUE}
+
+# Results print
+cat("Test set MSE for Gradient Boosting Model:", mse_boost, "\n")
+cat("Test set RMSE for Boosting Model:", rmse_boost, "\n")
+cat("Test set R-squared for Boosting Model:", r2_boost, "\n")
+```
+The outcome of Gradient Boosting is as above. The model performed worse than Random Forest with accuracy of 42.7% only. R squared of 0.42 informs that only 42% of variance in data is explained by the combination of features used. RMSE is moderate which shows the predicted values deviate from the actual value by about 53.9 units.
+
+```{r Boost3, echo=FALSE, include=TRUE}
+plot(boost.df_A1, i = "availability_30")
+```
+
+The plot above shows the relationship between target variable and predictor variable when all other variables are kept constant.
+
+\newpage
+## Method 2: Support Vector Regression Method (SVR) ([Appendix:11](#11))
+
+SVR finds a hyperplane in high dimensional space which is used to make predictions of the target variable where in the goal of the model is to minimise the distance between hyperplane and support vectors while also minimising prediction errors. The Kernel parameter controls the shape of decision boundary.
+
+```{r SVR1, echo=TRUE, include=TRUE}
+#==============================================
+# DATASET A - SUPPORT VECTOR REGRESSOR
+#==============================================
+# Convert categorical variables to dummy variables
+dummy_vars <- model.matrix(~., data = df_model_A[, sapply(df_model_A, is.factor)])
+# 
+# # Combine the dummy variables and numerical variables
+processed_data <- cbind(df_model_A[, !sapply(df_model_A, is.factor)], dummy_vars)
+# 
+# # Split the data into training and test sets
+set.seed(40385928)
+train_indices <- sample(nrow(processed_data), nrow(processed_data) * 0.5)
+train_data <- processed_data[train_indices, ]
+test_data <- processed_data[-train_indices, ]
+
+# Fit the SVR model
+svr_model <- svm(price~., data = train_data, kernel = "linear")
+
+# Make predictions on the test set
+test_predictions <- predict(svr_model, newdata = test_data)
+
+# Calculate performance metrics (RMSE and R-squared) on the testing set
+mse_svr <- mean((test_predictions - test_data$price)^2)
+rmse_svr <- sqrt(mean((test_predictions - test_data$price)^2))
+r2_svr <- cor(test_predictions, test_data$price)^2
+
+# Get the coefficients of the SVR model
+svr_coeffs <- coef(svr_model)
+
+```
+
+
+```{r SVR2, echo=FALSE, include= TRUE}
+# Print the performance metrics
+cat("Testing set MSE for SVR is:", mse_svr, "\n")
+cat("Testing set RMSE for SVR is:", rmse_svr, "\n")
+cat("Testing set R-squared for SVR is:", r2_svr, "\n")
+
+```
+The model performed poorly with an accuracy of 31.7%. RMSE is 60.06 which means the predicted values deviated from actual values by these many units.
+
+\newpage
+## Method 3: Neural Network Method ([Appendix:12](#12))
+
+A third of the dataset A was maintained as test data after it had been scaled. After that, dummies for the categorical variable were made. The next step was to construct a sequential neural network model that adds layers one at a time and uses dense layers for fully connected network design. The number of columns in the dataset is the same as the input shape. In this model, 50 nodes are generated, and "relu" (Rectified Linear unit activation) is used to do the activation. After the model is built, it is assembled, and the "MSE" loss function—which is the average of the squared difference between the predicted and actual values and is optimised by "rmsprop"—is used.
+
+```{r NN1, echo=TRUE, include= TRUE}
+#==============================================
+# DATASET A - NEURAL NETWORK
+#==============================================
+
+# Removing NA's from Dataset if any
+df_model1 <- na.omit(df_model_A)
+n <- nrow(df_model_A)
+
+# Seeding and splitting 1/3rd data as test set
+set.seed(40385928)
+ntest <- trunc(n / 3)
+testid <- sample(1:n, ntest)
+
+# Seed set and scaling the data
+set.seed(40385928)
+X <- scale(model.matrix(price ~ . - 1, data = df_model_A))
+Y <- df_model_A$price
+
+#Keras sequential model Builing
+modnn <- keras_model_sequential() %>%
+  layer_dense(units = 50, activation = "relu",# Number of nodes 50
+              # relu = Rectified Linear Unit activation
+              input_shape = ncol(X)) %>% #number of input variables
+  layer_dropout(rate = 0.4) %>% # dropout
+  layer_dense(units = 1) # number of output units
+
+# set.seed(40385928)
+# x <- model.matrix(price ~ . - 1, data = df_model_A) %>% scale()
+
+modnn %>% compile(loss = "mse",# loss function :Mean squared error
+                  optimizer = optimizer_rmsprop(),# optimising the RMS value
+                  metrics = list("mean_absolute_error") #evalauation metrics is MSE
+                 
+)
+
+##Learning rate of the model
+history <- modnn %>% fit(
+    # X[-testid, ], Y[-testid], epochs = 1000, batch_size = 32,
+  X[-testid, ], Y[-testid], epochs = 600, batch_size = 32,
+    #  X[-testid, ], Y[-testid], epochs = 300, batch_size = 32,
+  validation_data = list(X[testid, ], Y[testid])
+)
+
+# plot the learning model
+plot(history)
+
+# predictions on test set
+npred <- predict(modnn, X[testid, ])
+```
+
+```{r,echo= FALSE, out.width = "90%", fig.align = "center"}
+knitr::include_graphics("images/1000nnimage04.png")
+```
+
+```{r,echo= FALSE, out.width = "90%", fig.align = "center"}
+knitr::include_graphics("images/300nnimage05.png")
+```
+
+
+```{r NN2, echo=FALSE, include=FALSE}
+# Calcualting MSE, RMSE
+mse_nn <- mean((Y[testid] - npred)^2)
+rmse_nn <- sqrt(mean((Y[testid] - npred)^2))
+mae_nn <- mean(abs(npred - testid))
+
+ss_total <- sum((Y[testid] - mean(Y[testid]))^2)
+ss_residual <- sum((Y[testid] - npred)^2)
+r2_nn <- 1 - (ss_residual / ss_total)
+
+```
+
+```{r NN3, echo=FALSE, include= TRUE}
+# Print the performance metrics
+cat("Test set MSE for Neural Network is:", mse_nn, "\n")
+cat("Test set RMSE for Neural Network is:", rmse_nn, "\n")
+cat("Test set R-squared for Neural Network is:", r2_nn, "\n")
+```
+
+The model tested the learning rate using three epochs:
+1) 1000 epochs: This provided the model a decent learning rate, but towards the conclusion of the model, the Test RMSE decreased and the Train RMSE increased, indicating that the model had overfitted owing to its increased complexity.
+2) 600 epochs provided a medium learning rate.
+3. 300 epochs: This number produced a model learning rate that was much lower than the outcome of 600 epochs.
+It was decided to use this model, which is simpler than the others and less prone to overfitting, with 600 epochs and a batch size of 32. The mean MSE and RMSE are 12430.28, 111.49 respectively.
+
+## Comparing three models of Data set A  
+The three models used in this report are Random Forest along with Gradient Boosting, followed by Support vector regressor and Neural Network. 
+
+```{r,echo= FALSE, out.width = "90%", fig.align = "center"}
+knitr::include_graphics("images/Image06.png")
+```
+
+As can be seen from the above performance metrics, Random Forest model outperformed all other models with an accuracy of 47% and RMSE at 51.86. All the other models have poorer accuracy and RMSE. Random Forest creates independent trees by subetting random data set and random features thus it is fast and easy to interpret.
+
+## PREDICTIVE MODELING USING SVR METHOD ON DATASET B ([Appendix:13](#13))
+
+Dataset B was created by subsetting two less most frequent cities viz Amsterdam and Copenhagen. The dataset has 222 observations. Some variables with NAs were dropped as dropping rows would lead to loss of data. Then dummy variables were created and data was split into train and test set to fit SVR model on train set. Usig fitted model, predictions were made on test set. 
+
+```{r Data B, echo=FALSE, include=FALSE}
+#=======================
+# DATASET B
+#=======================
+
+# dropping columns with NA's
+df_B01 <- subset(df_B, select = -c(host_since,first_review, last_review))
+
+#==============================================
+# DATASET B - SUPPORT VECTOR REGRESSOR
+#==============================================
+# Convert categorical variables to dummy variables
+dummy_vars_B <- model.matrix(~., data = df_B01[, sapply(df_B01, is.factor)])
+# 
+# # Combine the dummy variables and numerical variables
+proc_data_B <- cbind(df_B01[, !sapply(df_B01, is.factor)], dummy_vars_B)
+# 
+# # Split the data into training and test sets
+set.seed(40385928)
+trainindex_B <- sample(nrow(proc_data_B), nrow(proc_data_B) * 0.5)
+train_B <- proc_data_B[trainindex_B, ]
+test_B <- proc_data_B[-trainindex_B, ]
+
+# Fit the SVR model
+svr_B <- svm(price~., data = train_B, kernel = "linear")
+
+# Make predictions on the test set
+test_pred_B <- predict(svr_B, newdata = test_B)
+
+# Calculate performance metrics (RMSE and R-squared) on the testing set
+rmse_B <- sqrt(mean((test_pred_B - test_B$price)^2))
+r2_B <- cor(test_pred_B, test_B$price)^2
+
+# Get the coefficients of the SVR model
+svr_coeff_B <- coef(svr_B)
+
+```
+
+```{r Data B2, echo=FALSE, include=TRUE}
+# Print the performance metrics
+cat("Test set RMSE for SVR of Dataset B is:", rmse_B, "\n")
+cat("Test set R-squared for SVR of Dataset B is:", r2_B, "\n")
+```
+The model performed poorly with 31 % accuracy. RMSE is 204.93 which means predicted values deviate by about 204.93 units from the actual values.
+SVR showed similar performance in both dataset A and B with low accuracy of 31% for each.
+
+# Conclusion and Recommendations 
+
+The report aims to build a predictive model using supervised machine learning methods to predict rent price of property listed on Airbnb. The given dataset has been statistically summarized, cleaned, and preprocessed. Graphical exploration shows the distribution of observations across cities and various features of the property. Three machine learning models were tested on the data set and Random Forest model outperformed other models. Overall, none of the model gave satisfactory performance which could be owed to data imbalance.
+
+\newpage
+# References {-}
+
+1. Gareth, J., Daniela, W., Trevor, H., & Robert, T. (2021). An introduction to statistical learning: with applications in R. Spinger, Second Edition. <https://www.statlearning.com/>
+
+2. Chen, S.B., Zhang, Y.M., Ding, C.H., Zhang, J. and Luo, B., 2019. Extended adaptive Lasso for multi-class and multi-label feature selection. Knowledge-Based Systems, 173, pp.28-36.
+
+\newpage
+# Appendices {-}
+
+# Appendix 1: Data Load {#1}
+
+```{r ref.label="Data Load", echo = TRUE, eval=FALSE}
+
+```
+
+# Appendix 2: Stats Summary {#2}
+
+```{r 2, ref.label="Stats Summary", echo = TRUE, eval=TRUE}
+
+```
+
+# Appendix 3: Preprocessing {#3}  
+  * Appendix 3a: City name correction {#3a}  
+
+```{r 3a, ref.label="Prepro 1", echo = TRUE, eval=TRUE}
+
+```
+  
+  * Appendix 3b: Dealing with NAs {#3b}
+```{r 3b, ref.label="Prepro 2", echo = TRUE, eval=TRUE}
+
+```
+  
+  * Appendix 3c: Dealing with Amenities {#3c}
+```{r 3c, ref.label="Prepro 3", echo = TRUE, eval=TRUE}
+
+```
+  
+  * Appendix 3d: Binning {#3d}
+```{r 3d, ref.label="Prepro 4", echo = TRUE, eval=TRUE}
+
+```
+  
+  * Appendix 3e: Regrouping property_type {#3e}
+```{r 3e, ref.label="Prepro 5", echo = TRUE, eval=TRUE}
+
+```
+  
+  * Appendix 3f: Dropping duplicate columns {#3f}
+```{r 3f, ref.label="Prepro 6", echo = TRUE, eval=TRUE}
+
+```
+  
+  * Appendix 3g: Graphs {#3g}
+```{r 3g, ref.label="Prepro 7", echo = TRUE, eval=TRUE,out.width = "50%",fig.width=10, fig.height=10}
+
+```
+  
+  * Appendix 3h: Dealing with price outliers {#3h}
+```{r 3h, ref.label="Prepro 8", echo = TRUE, eval=TRUE}
+
+```
+
+# Appendix 4: Correlation {#4}
+```{r 4, ref.label="Correlation", echo = TRUE, eval=TRUE, include=TRUE}
+
+```
+
+# Appendix 5: Dropping correlated columns {#5}
+```{r 5, ref.label="cor subset", echo = TRUE, eval=TRUE}
+
+```
+
+# Appendix 6: Graphical Exploration {#6}
+
+```{r 6a, ref.label="G1", echo = TRUE, eval=FALSE, include=FALSE,out.width = "50%",fig.width=10, fig.height=10}
+
+```
+
+```{r 6b, ref.label="G2", echo = TRUE, eval=TRUE,include=TRUE,out.width = "50%",fig.width=10, fig.height=10}
+
+```
+
+```{r 6c, ref.label="G3", echo = TRUE, eval=TRUE,include=TRUE,out.width = "50%",fig.width=10, fig.height=10}
+
+```
+
+# Appendix 7: Data Splitting {#7}
+```{r 7, ref.label="Data split", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+# Appendix 8: Column binning {#8}
+```{r 8, ref.label="Bins", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+# Appendix 9: Feature Selection-Lasso {#9}
+```{r 9a, ref.label="Lasso 1", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+```{r 9b, ref.label="Lasso 2", echo = TRUE, eval=FALSE, include= TRUE}
+
+```
+
+```{r 9c, ref.label="Top15", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+# Appendix 10: Model- Random Forest & Boosting {#10}
+
+```{r 10a, ref.label="RF1", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+```{r 10b, ref.label="RF4", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+```{r 10c, ref.label="Boost2", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+```{r 10d, ref.label="Boost3", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+# Appendix 11: Model- SVR {#11}
+
+```{r 11, ref.label="SVR2", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+
+# Appendix 12: Model- Neural Network {#12}
+
+```{r 12a, ref.label="NN2", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+```{r 12b, ref.label="NN3", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+# Appendix 13: Dataset B {#13}
+
+```{r 13a, ref.label="Data B", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
+
+```{r 13b, ref.label="Data B2", echo = TRUE, eval=FALSE, include=TRUE}
+
+```
